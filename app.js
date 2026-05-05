@@ -131,6 +131,7 @@
       await navigator.serviceWorker.ready;
       if (notifGranted() && 'PushManager' in window) {
         pushSubscription = await swReg.pushManager.getSubscription().catch(() => null);
+        if (!pushSubscription) pushSubscription = await subscribePush().catch(() => null);
       }
     } catch (e) { console.warn('SW init failed', e); }
   }
