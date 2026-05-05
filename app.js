@@ -116,13 +116,19 @@
   let osPlayerId = null;
 
   function initOneSignal() {
-    (window.OneSignalDeferred = window.OneSignalDeferred || []).push(function(OS) {
+    (window.OneSignalDeferred = window.OneSignalDeferred || []).push(async function(OS) {
       const sub = OS.User?.PushSubscription;
       if (!sub) return;
+      // Capture ID immediately if available
       osPlayerId = sub.id || sub.token || null;
+      // Listen for future changes (ID populated after server sync)
       sub.addEventListener('change', (e) => {
         osPlayerId = e.current?.id || e.current?.token || null;
       });
+      // If permission already granted but not opted in, opt in explicitly
+      if (OS.Notifications.permission && !sub.optedIn) {
+        await sub.optIn().catch(() => {});
+      }
     });
   }
   async function initSW() {
