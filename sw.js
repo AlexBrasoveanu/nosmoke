@@ -1,4 +1,4 @@
-const CACHE = 'nosmoke-v3';
+const CACHE = 'nosmoke-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -81,6 +81,19 @@ self.addEventListener('message', (e) => {
       badge: './icons/icon-192.png',
     });
   }
+});
+
+self.addEventListener('push', (e) => {
+  let data = { title: 'NoSmoke', body: '' };
+  try { data = e.data.json(); } catch {}
+  e.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: './icons/icon-192.png',
+      badge: './icons/icon-192.png',
+      tag: data.tag || 'nosmoke-push',
+    })
+  );
 });
 
 self.addEventListener('notificationclick', (e) => {

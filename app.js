@@ -17,6 +17,8 @@
   ];
   const MONTHS       = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
   const MONTHS_SHORT = ['ian','feb','mar','apr','mai','iun','iul','aug','sep','oct','nov','dec'];
+  const VAPID_PUBLIC_KEY = 'BN-kRltZAVKFsfgko8QrjBSJxcRBVgXO6cpbhGvZulMURIrnzFYiAOj4sy24TwacHTubIdU_VivSN7-6scLzU-M';
+  const WORKER_URL = 'https://nosmoke.YOUR-ACCOUNT.workers.dev';
 
   // ============ State ============
   const defaultState = () => ({
@@ -113,12 +115,23 @@
 
   // ============ SW + Notifications ============
   let swReg = null;
+  let pushSubscription = null;
+
+  function urlB64ToUint8Array(b64) {
+    const padding = '='.repeat((4 - b64.length % 4) % 4);
+    const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+  }
 
   async function initSW() {
     if (!('serviceWorker' in navigator)) return;
     try {
       swReg = await navigator.serviceWorker.register('sw.js');
       await navigator.serviceWorker.ready;
+      if (notifGranted() && 'PushManager' in window) {
+        pushSubscription = await swReg.pushManager.getSubscription().catch(() => null);
+      }
     } catch (e) { console.warn('SW init failed', e); }
   }
 
@@ -131,12 +144,61 @@
   function notifSupported() { return 'Notification' in window; }
   function notifGranted()   { return notifSupported() && Notification.permission === 'granted'; }
 
+  async function subscribePush() {
+    if (!('PushManager' in window)) return null;
+    try {
+      const reg = swReg || await navigator.serviceWorker.ready;
+      pushSubscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+      return pushSubscription;
+    } catch (e) {
+      console.warn('Push subscribe failed', e);
+      return null;
+    }
+  }
+
+  async function getPushSubscription() {
+    if (pushSubscription) return pushSubscription;
+    if (!('PushManager' in window)) return null;
+    try {
+      const reg = swReg || await navigator.serviceWorker.ready;
+      pushSubscription = await reg.pushManager.getSubscription();
+      return pushSubscription;
+    } catch { return null; }
+  }
+
+  async function schedulePush(tag, when, title, body) {
+    const sub = await getPushSubscription();
+    if (!sub || !WORKER_URL.includes('.workers.dev')) return;
+    try {
+      await fetch(WORKER_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'schedule', subscription: sub.toJSON(), tag, sendAt: when, title, message: body }),
+      });
+    } catch {}
+  }
+
+  async function cancelAllPushes() {
+    if (!WORKER_URL.includes('.workers.dev')) return;
+    try {
+      await fetch(WORKER_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancelAll' }),
+      });
+    } catch {}
+  }
+
   async function requestNotifPerm() {
     if (!notifSupported()) return false;
     const result = await Notification.requestPermission();
     if (result === 'granted') {
       state.settings.notifEnabled = true;
       saveState();
+      await subscribePush();
       updateNotifUI();
       renderSettings();
       return true;
@@ -144,7 +206,7 @@
     return false;
   }
 
-  function renderNotifDiag() {
+  async function renderNotifDiag() {
     const el = $('#notifDiag');
     if (!el) return;
 
@@ -191,6 +253,15 @@
       swActive ? null : 'Reîncarcă app-ul o dată pentru a activa SW'));
 
     el.innerHTML = rows.join('');
+
+    // 6. Push subscription (async — updates DOM when ready)
+    if ('PushManager' in window) {
+      const sub = await getPushSubscription();
+      rows.push(diagRow('Abonament push (VAPID)',
+        sub ? 'ok' : 'warn',
+        sub ? null : 'Dezactivează și reactivează notificările'));
+      el.innerHTML = rows.join('');
+    }
   }
 
   function postSW(msg) {
@@ -209,6 +280,7 @@
 
   function cancelAllNotifs() {
     postSW({ type: 'cancelAll' });
+    cancelAllPushes();
   }
 
   function rescheduleTimerNotifs() {
@@ -219,13 +291,18 @@
     const expireAt = state.lastSmoke + intervalMs;
     if (expireAt > Date.now()) {
       postSW({ type: 'schedule', tag: 'timer-done', when: expireAt, title: 'Poți fuma acum', body: 'Timerul e gata.' });
+      schedulePush('timer-done', expireAt, 'Poți fuma acum', 'Timerul e gata.');
     }
     if (state.settings.notifFiveMin) {
       const fiveBefore = expireAt - 5 * 60 * 1000;
-      if (fiveBefore > Date.now()) postSW({ type: 'schedule', tag: 'timer-5min', when: fiveBefore, title: 'Mai ai 5 minute', body: 'Timerul e aproape gata.' });
+      if (fiveBefore > Date.now()) {
+        postSW({ type: 'schedule', tag: 'timer-5min', when: fiveBefore, title: 'Mai ai 5 minute', body: 'Timerul e aproape gata.' });
+        schedulePush('timer-5min', fiveBefore, 'Mai ai 5 minute', 'Timerul e aproape gata.');
+      }
     }
     if (state.settings.notifWindowOpen) {
       postSW({ type: 'schedule', tag: 'timer-open', when: expireAt + 15 * 60 * 1000, title: 'Fereastra e deschisă', body: 'Mai ai timp — nu te grăbi.' });
+      schedulePush('timer-open', expireAt + 15 * 60 * 1000, 'Fereastra e deschisă', 'Mai ai timp — nu te grăbi.');
     }
     scheduleSleepNotif();
   }
@@ -241,6 +318,7 @@
     const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
     if (target > now) {
       postSW({ type: 'schedule', tag: 'sleep', when: target.getTime(), title: 'E timpul de somn?', body: 'Obișnuiești să te culci acum. Vrei să închizi ziua?' });
+      schedulePush('sleep', target.getTime(), 'E timpul de somn?', 'Obișnuiești să te culci acum. Vrei să închizi ziua?');
       state.sleepPromptKey = todayK;
       saveState();
     }
