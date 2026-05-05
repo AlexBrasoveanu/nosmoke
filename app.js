@@ -705,6 +705,8 @@
       if (k === 'notifEnabled' && newVal && !notifGranted()) {
         const ok = await requestNotifPerm();
         if (!ok) return;
+      } else if (k === 'notifEnabled' && newVal && notifGranted()) {
+        await subscribePush();
       }
       state.settings[k] = newVal;
       saveState(); renderSettings();
