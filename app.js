@@ -113,31 +113,11 @@
 
   // ============ SW + Notifications ============
   let swReg = null;
-  let osPlayerId = null;
 
-  function initOneSignal() {
-    (window.OneSignalDeferred = window.OneSignalDeferred || []).push(async function(OS) {
-      const sub = OS.User?.PushSubscription;
-      if (!sub) return;
-      // Capture ID immediately if available
-      osPlayerId = sub.id || sub.token || null;
-      // Listen for future changes (ID populated after server sync)
-      sub.addEventListener('change', (e) => {
-        osPlayerId = e.current?.id || e.current?.token || null;
-      });
-      // If permission already granted but not opted in, opt in explicitly
-      if (OS.Notifications.permission && !sub.optedIn) {
-        await sub.optIn().catch(() => {});
-      }
-    });
-  }
   async function initSW() {
     if (!('serviceWorker' in navigator)) return;
     try {
-      // Caching SW
-      navigator.serviceWorker.register('sw.js').catch(() => {});
-      // OneSignal SW (for push notifications)
-      swReg = await navigator.serviceWorker.register('OneSignalSDKWorker.js');
+      swReg = await navigator.serviceWorker.register('sw.js');
       await navigator.serviceWorker.ready;
     } catch (e) { console.warn('SW init failed', e); }
   }
@@ -153,28 +133,20 @@
 
   async function requestNotifPerm() {
     if (!notifSupported()) return false;
-    return new Promise((resolve) => {
-      window.OneSignalDeferred = window.OneSignalDeferred || [];
-      OneSignalDeferred.push(async function(OneSignal) {
-        await OneSignal.Notifications.requestPermission();
-        if (OneSignal.Notifications.permission === true) {
-          state.settings.notifEnabled = true;
-          saveState();
-          updateNotifUI();
-          renderSettings();
-          renderNotifDiag();
-          resolve(true);
-        } else {
-          resolve(false);
-        }
-      });
-    });
+    const result = await Notification.requestPermission();
+    if (result === 'granted') {
+      state.settings.notifEnabled = true;
+      saveState();
+      updateNotifUI();
+      renderSettings();
+      return true;
+    }
+    return false;
   }
 
-  async function renderNotifDiag() {
+  function renderNotifDiag() {
     const el = $('#notifDiag');
     if (!el) return;
-    el.innerHTML = `<div class="row"><span class="row-label" style="color:var(--text-mute);font-size:13px">Se verifică…</span></div>`;
 
     const rows = [];
     function diagRow(label, status, sub) {
@@ -187,14 +159,12 @@
 
     // 1. iOS standalone
     if (isIOS()) {
-      if (isStandalone()) {
-        rows.push(diagRow('Instalat pe home screen', 'ok', null));
-      } else {
-        rows.push(diagRow('Instalat pe home screen', 'warn', 'Deschide din home screen pentru push'));
-      }
+      rows.push(isStandalone()
+        ? diagRow('Instalat pe home screen', 'ok', null)
+        : diagRow('Instalat pe home screen', 'warn', 'Deschide din home screen pentru notificări'));
     }
 
-    // 2. Notification API support
+    // 2. Notification API
     if (!notifSupported()) {
       rows.push(diagRow('API notificări', 'error', 'Browserul nu suportă notificări'));
       el.innerHTML = rows.join('');
@@ -203,73 +173,22 @@
 
     // 3. Permission
     const perm = Notification.permission;
-    if (perm === 'granted') {
-      rows.push(diagRow('Permisiune sistem', 'ok', null));
-    } else if (perm === 'denied') {
-      rows.push(diagRow('Permisiune sistem', 'error', 'Blocate — permite din Setări iOS → NoSmoke'));
-    } else {
-      rows.push(diagRow('Permisiune sistem', 'warn', 'Neacordată — apasă „Activează notificările"'));
-    }
+    rows.push(perm === 'granted'
+      ? diagRow('Permisiune sistem', 'ok', null)
+      : perm === 'denied'
+        ? diagRow('Permisiune sistem', 'error', 'Blocate — permite din Setări iOS → NoSmoke')
+        : diagRow('Permisiune sistem', 'warn', 'Neacordată — apasă „Activează notificările"'));
 
     // 4. Toggle in-app
-    rows.push(diagRow('Activate în aplicație', state.settings.notifEnabled ? 'ok' : 'warn',
+    rows.push(diagRow('Activate în aplicație',
+      state.settings.notifEnabled ? 'ok' : 'warn',
       state.settings.notifEnabled ? null : 'Activează toggle-ul de sus'));
 
-    // 5. OneSignal SDK + Player ID
-    let oneSignalOk = false, optedIn = false;
-    await new Promise(resolve => {
-      const t = setTimeout(resolve, 3000);
-      (window.OneSignalDeferred = window.OneSignalDeferred || []).push(function(OS) {
-        clearTimeout(t);
-        oneSignalOk = true;
-        optedIn = OS.User?.PushSubscription?.optedIn ?? false;
-        resolve();
-      });
-    });
-    if (!oneSignalOk) {
-      rows.push(diagRow('OneSignal SDK', 'error', 'Neîncărcat — verifică conexiunea internet'));
-    } else {
-      rows.push(diagRow('OneSignal SDK', 'ok', null));
-      if (osPlayerId) {
-        rows.push(diagRow('Abonament push', 'ok', `ID: ${osPlayerId.slice(0, 8)}…`));
-      } else if (optedIn) {
-        rows.push(diagRow('Abonament push', 'warn', 'Abonat, ID în așteptare — închide și redeschide app-ul'));
-      } else {
-        rows.push(diagRow('Abonament push', 'error', 'Neabonat — dezactivează și reactivează notificările'));
-      }
-    }
-
-    // 6. Cloudflare Worker — distinguish CORS error from truly offline
-    let cfStatus = 'offline';
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 5000);
-      const res = await fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ping: true }),
-        signal: ctrl.signal,
-      });
-      clearTimeout(t);
-      cfStatus = res.status < 500 ? 'ok' : 'offline';
-    } catch {
-      // POST failed — try a no-cors GET to see if server is alive at all
-      try {
-        const ctrl2 = new AbortController();
-        const t2 = setTimeout(() => ctrl2.abort(), 3000);
-        await fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
-          mode: 'no-cors',
-          signal: ctrl2.signal,
-        });
-        clearTimeout(t2);
-        cfStatus = 'cors'; // server alive but CORS blocks our requests
-      } catch { cfStatus = 'offline'; }
-    }
-    rows.push(diagRow('Server programare push',
-      cfStatus === 'ok' ? 'ok' : cfStatus === 'cors' ? 'warn' : 'error',
-      cfStatus === 'ok' ? null
-        : cfStatus === 'cors' ? 'CORS lipsă — actualizează Cloudflare Worker'
-        : 'Worker inaccesibil — verifică Cloudflare'));
+    // 5. Service Worker
+    const swActive = !!navigator.serviceWorker?.controller;
+    rows.push(diagRow('Service Worker',
+      swActive ? 'ok' : 'warn',
+      swActive ? null : 'Reîncarcă app-ul o dată pentru a activa SW'));
 
     el.innerHTML = rows.join('');
   }
@@ -283,21 +202,9 @@
   async function notifyNow(title, body, tag) {
     if (!state.settings.notifEnabled || !notifGranted()) return;
     try {
-      if (swReg) {
-        await swReg.showNotification(title, { body, tag: tag || 'nosmoke', icon: 'icons/icon-192.png', badge: 'icons/icon-192.png' });
-        return;
-      }
-      new Notification(title, { body });
+      const reg = swReg || await navigator.serviceWorker.ready;
+      await reg.showNotification(title, { body, tag: tag || 'nosmoke', icon: 'icons/icon-192.png', badge: 'icons/icon-192.png' });
     } catch {}
-  }
-
-  function schedulePushViaCloudflare(title, body, dateObj) {
-    if (!state.settings.notifEnabled || !osPlayerId) return;
-    fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playerId: osPlayerId, title, message: body, sendAfter: dateObj.toUTCString() }),
-    }).catch(e => console.warn('Push schedule failed', e));
   }
 
   function cancelAllNotifs() {
@@ -306,25 +213,25 @@
 
   function rescheduleTimerNotifs() {
     cancelAllNotifs();
+    if (!state.settings.notifEnabled || !notifGranted()) return;
     if (!state.dayActive || !state.lastSmoke) return;
     const intervalMs = state.settings.intervalMinutes * 60 * 1000;
-    const expireAt = new Date(state.lastSmoke + intervalMs);
-    if (expireAt > new Date()) {
-      schedulePushViaCloudflare('Poți fuma acum', 'Timerul e gata.', expireAt);
+    const expireAt = state.lastSmoke + intervalMs;
+    if (expireAt > Date.now()) {
+      postSW({ type: 'schedule', tag: 'timer-done', when: expireAt, title: 'Poți fuma acum', body: 'Timerul e gata.' });
     }
     if (state.settings.notifFiveMin) {
-      const fiveBefore = new Date(expireAt.getTime() - 5 * 60 * 1000);
-      if (fiveBefore > new Date()) schedulePushViaCloudflare('Mai ai 5 minute', 'Timerul e aproape gata.', fiveBefore);
+      const fiveBefore = expireAt - 5 * 60 * 1000;
+      if (fiveBefore > Date.now()) postSW({ type: 'schedule', tag: 'timer-5min', when: fiveBefore, title: 'Mai ai 5 minute', body: 'Timerul e aproape gata.' });
     }
     if (state.settings.notifWindowOpen) {
-      const after15 = new Date(expireAt.getTime() + 15 * 60 * 1000);
-      schedulePushViaCloudflare('Fereastra e deschisă', 'Mai ai timp — nu te grăbi.', after15);
+      postSW({ type: 'schedule', tag: 'timer-open', when: expireAt + 15 * 60 * 1000, title: 'Fereastra e deschisă', body: 'Mai ai timp — nu te grăbi.' });
     }
     scheduleSleepNotif();
   }
 
   function scheduleSleepNotif() {
-    if (!state.dayActive) return;
+    if (!state.dayActive || !state.settings.notifEnabled || !notifGranted()) return;
     const t = state.settings.sleepTime;
     if (!t) return;
     const todayK = dateKey();
@@ -333,7 +240,7 @@
     const now = new Date();
     const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
     if (target > now) {
-      schedulePushViaCloudflare('E timpul de somn?', 'Obișnuiești să te culci acum. Vrei să închizi ziua?', target);
+      postSW({ type: 'schedule', tag: 'sleep', when: target.getTime(), title: 'E timpul de somn?', body: 'Obișnuiești să te culci acum. Vrei să închizi ziua?' });
       state.sleepPromptKey = todayK;
       saveState();
     }
@@ -899,7 +806,6 @@
 
     // SW + notifs
     initSW();
-    initOneSignal();
     updateNotifUI();
 
     // Visibility change — refresh on resume
