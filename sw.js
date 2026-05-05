@@ -23,7 +23,7 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET') return;
+  if (req.method !== 'GET' || !req.url.startsWith('http')) return;
   e.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;
