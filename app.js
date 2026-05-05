@@ -18,7 +18,7 @@
   const MONTHS       = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
   const MONTHS_SHORT = ['ian','feb','mar','apr','mai','iun','iul','aug','sep','oct','nov','dec'];
   const VAPID_PUBLIC_KEY = 'BN-kRltZAVKFsfgko8QrjBSJxcRBVgXO6cpbhGvZulMURIrnzFYiAOj4sy24TwacHTubIdU_VivSN7-6scLzU-M';
-  const WORKER_URL = 'https://nosmoke.YOUR-ACCOUNT.workers.dev';
+  const WORKER_URL = 'https://nosmoke-push.alexandru-brasoveanu7.workers.dev';
 
   // ============ State ============
   const defaultState = () => ({
