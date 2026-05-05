@@ -198,13 +198,15 @@
       state.settings.notifEnabled ? null : 'Activează toggle-ul de sus'));
 
     // 5. OneSignal SDK + Player ID
-    let oneSignalOk = false, playerId = null;
+    let oneSignalOk = false, playerId = null, optedIn = false;
     await new Promise(resolve => {
       const t = setTimeout(resolve, 3000);
       (window.OneSignalDeferred = window.OneSignalDeferred || []).push(function(OS) {
         clearTimeout(t);
         oneSignalOk = true;
-        playerId = OS.User?.PushSubscription?.id || null;
+        const sub = OS.User?.PushSubscription;
+        playerId = sub?.id || sub?.token || null;
+        optedIn  = sub?.optedIn ?? false;
         resolve();
       });
     });
@@ -214,8 +216,10 @@
       rows.push(diagRow('OneSignal SDK', 'ok', null));
       if (playerId) {
         rows.push(diagRow('Abonament push', 'ok', `ID: ${playerId.slice(0, 8)}…`));
+      } else if (optedIn) {
+        rows.push(diagRow('Abonament push', 'warn', 'Abonat, ID în așteptare — închide și redeschide app-ul'));
       } else {
-        rows.push(diagRow('Abonament push', 'error', 'Fără ID — dezactivează și reactivează notificările'));
+        rows.push(diagRow('Abonament push', 'error', 'Neabonat — dezactivează și reactivează notificările'));
       }
     }
 
