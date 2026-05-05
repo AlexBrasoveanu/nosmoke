@@ -144,7 +144,7 @@
           saveState();
           updateNotifUI();
           renderSettings();
-          checkPushConnection();
+          renderNotifDiag();
           resolve(true);
         } else {
           resolve(false);
@@ -153,14 +153,90 @@
     });
   }
 
-  function checkPushConnection() {
-    window.OneSignalDeferred = window.OneSignalDeferred || [];
-    OneSignalDeferred.push(function(OneSignal) {
-      const el = $('#pushConnectionStatus');
-      if (!el) return;
-      const hasId = OneSignal.User && OneSignal.User.PushSubscription && OneSignal.User.PushSubscription.id;
-      el.style.display = hasId ? 'flex' : 'none';
+  async function renderNotifDiag() {
+    const el = $('#notifDiag');
+    if (!el) return;
+    el.innerHTML = `<div class="row"><span class="row-label" style="color:var(--text-mute);font-size:13px">Se verifică…</span></div>`;
+
+    const rows = [];
+    function diagRow(label, status, sub) {
+      const color = status === 'ok' ? '#4ade80' : status === 'warn' ? '#fbbf24' : '#f87171';
+      return `<div class="row">
+        <div class="row-label" style="font-size:14px">${label}${sub ? `<div class="row-sub">${sub}</div>` : ''}</div>
+        <span style="color:${color};font-size:18px;line-height:1;flex-shrink:0">●</span>
+      </div>`;
+    }
+
+    // 1. iOS standalone
+    if (isIOS()) {
+      if (isStandalone()) {
+        rows.push(diagRow('Instalat pe home screen', 'ok', null));
+      } else {
+        rows.push(diagRow('Instalat pe home screen', 'warn', 'Deschide din home screen pentru push'));
+      }
+    }
+
+    // 2. Notification API support
+    if (!notifSupported()) {
+      rows.push(diagRow('API notificări', 'error', 'Browserul nu suportă notificări'));
+      el.innerHTML = rows.join('');
+      return;
+    }
+
+    // 3. Permission
+    const perm = Notification.permission;
+    if (perm === 'granted') {
+      rows.push(diagRow('Permisiune sistem', 'ok', null));
+    } else if (perm === 'denied') {
+      rows.push(diagRow('Permisiune sistem', 'error', 'Blocate — permite din Setări iOS → NoSmoke'));
+    } else {
+      rows.push(diagRow('Permisiune sistem', 'warn', 'Neacordată — apasă „Activează notificările"'));
+    }
+
+    // 4. Toggle in-app
+    rows.push(diagRow('Activate în aplicație', state.settings.notifEnabled ? 'ok' : 'warn',
+      state.settings.notifEnabled ? null : 'Activează toggle-ul de sus'));
+
+    // 5. OneSignal SDK + Player ID
+    let oneSignalOk = false, playerId = null;
+    await new Promise(resolve => {
+      const t = setTimeout(resolve, 3000);
+      (window.OneSignalDeferred = window.OneSignalDeferred || []).push(function(OS) {
+        clearTimeout(t);
+        oneSignalOk = true;
+        playerId = OS.User?.PushSubscription?.id || null;
+        resolve();
+      });
     });
+    if (!oneSignalOk) {
+      rows.push(diagRow('OneSignal SDK', 'error', 'Neîncărcat — verifică conexiunea internet'));
+    } else {
+      rows.push(diagRow('OneSignal SDK', 'ok', null));
+      if (playerId) {
+        rows.push(diagRow('Abonament push', 'ok', `ID: ${playerId.slice(0, 8)}…`));
+      } else {
+        rows.push(diagRow('Abonament push', 'error', 'Fără ID — dezactivează și reactivează notificările'));
+      }
+    }
+
+    // 6. Cloudflare Worker
+    let cfOk = false;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ping: true }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      cfOk = res.status < 500;
+    } catch { cfOk = false; }
+    rows.push(diagRow('Server programare push', cfOk ? 'ok' : 'error',
+      cfOk ? null : 'Cloudflare Worker inaccesibil'));
+
+    el.innerHTML = rows.join('');
   }
 
   function postSW(msg) {
@@ -606,7 +682,7 @@
       seg.querySelectorAll('button').forEach(b => b.classList.toggle('selected', (isNum ? Number(b.dataset.value) : b.dataset.value) === val));
     });
     $('#sleepTimeInput').value = state.settings.sleepTime || '';
-    checkPushConnection();
+    renderNotifDiag();
   }
 
   function bindSettings() {
