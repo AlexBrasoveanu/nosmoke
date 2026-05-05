@@ -128,7 +128,7 @@
     return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
   }
   function isIOS() {
-    return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.userAgent));
   }
   function notifSupported() { return 'Notification' in window; }
   function notifGranted()   { return notifSupported() && Notification.permission === 'granted'; }
@@ -219,8 +219,8 @@
       }
     }
 
-    // 6. Cloudflare Worker
-    let cfOk = false;
+    // 6. Cloudflare Worker — distinguish CORS error from truly offline
+    let cfStatus = 'offline';
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 5000);
@@ -231,10 +231,25 @@
         signal: ctrl.signal,
       });
       clearTimeout(t);
-      cfOk = res.status < 500;
-    } catch { cfOk = false; }
-    rows.push(diagRow('Server programare push', cfOk ? 'ok' : 'error',
-      cfOk ? null : 'Cloudflare Worker inaccesibil'));
+      cfStatus = res.status < 500 ? 'ok' : 'offline';
+    } catch {
+      // POST failed — try a no-cors GET to see if server is alive at all
+      try {
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 3000);
+        await fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
+          mode: 'no-cors',
+          signal: ctrl2.signal,
+        });
+        clearTimeout(t2);
+        cfStatus = 'cors'; // server alive but CORS blocks our requests
+      } catch { cfStatus = 'offline'; }
+    }
+    rows.push(diagRow('Server programare push',
+      cfStatus === 'ok' ? 'ok' : cfStatus === 'cors' ? 'warn' : 'error',
+      cfStatus === 'ok' ? null
+        : cfStatus === 'cors' ? 'CORS lipsă — actualizează Cloudflare Worker'
+        : 'Worker inaccesibil — verifică Cloudflare'));
 
     el.innerHTML = rows.join('');
   }
