@@ -113,6 +113,18 @@
 
   // ============ SW + Notifications ============
   let swReg = null;
+  let osPlayerId = null;
+
+  function initOneSignal() {
+    (window.OneSignalDeferred = window.OneSignalDeferred || []).push(function(OS) {
+      const sub = OS.User?.PushSubscription;
+      if (!sub) return;
+      osPlayerId = sub.id || sub.token || null;
+      sub.addEventListener('change', (e) => {
+        osPlayerId = e.current?.id || e.current?.token || null;
+      });
+    });
+  }
   async function initSW() {
     if (!('serviceWorker' in navigator)) return;
     try {
@@ -198,15 +210,13 @@
       state.settings.notifEnabled ? null : 'Activează toggle-ul de sus'));
 
     // 5. OneSignal SDK + Player ID
-    let oneSignalOk = false, playerId = null, optedIn = false;
+    let oneSignalOk = false, optedIn = false;
     await new Promise(resolve => {
       const t = setTimeout(resolve, 3000);
       (window.OneSignalDeferred = window.OneSignalDeferred || []).push(function(OS) {
         clearTimeout(t);
         oneSignalOk = true;
-        const sub = OS.User?.PushSubscription;
-        playerId = sub?.id || sub?.token || null;
-        optedIn  = sub?.optedIn ?? false;
+        optedIn = OS.User?.PushSubscription?.optedIn ?? false;
         resolve();
       });
     });
@@ -214,8 +224,8 @@
       rows.push(diagRow('OneSignal SDK', 'error', 'Neîncărcat — verifică conexiunea internet'));
     } else {
       rows.push(diagRow('OneSignal SDK', 'ok', null));
-      if (playerId) {
-        rows.push(diagRow('Abonament push', 'ok', `ID: ${playerId.slice(0, 8)}…`));
+      if (osPlayerId) {
+        rows.push(diagRow('Abonament push', 'ok', `ID: ${osPlayerId.slice(0, 8)}…`));
       } else if (optedIn) {
         rows.push(diagRow('Abonament push', 'warn', 'Abonat, ID în așteptare — închide și redeschide app-ul'));
       } else {
@@ -276,19 +286,12 @@
   }
 
   function schedulePushViaCloudflare(title, body, dateObj) {
-    if (!state.settings.notifEnabled) return;
-    window.OneSignalDeferred = window.OneSignalDeferred || [];
-    OneSignalDeferred.push(async function(OneSignal) {
-      const playerId = OneSignal.User.PushSubscription.id;
-      if (!playerId) return;
-      try {
-        await fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ playerId, title, message: body, sendAfter: dateObj.toUTCString() }),
-        });
-      } catch (e) { console.warn('Push schedule failed', e); }
-    });
+    if (!state.settings.notifEnabled || !osPlayerId) return;
+    fetch('https://nosmoke-push.alexandru-brasoveanu7.workers.dev/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId: osPlayerId, title, message: body, sendAfter: dateObj.toUTCString() }),
+    }).catch(e => console.warn('Push schedule failed', e));
   }
 
   function cancelAllNotifs() {
@@ -890,6 +893,7 @@
 
     // SW + notifs
     initSW();
+    initOneSignal();
     updateNotifUI();
 
     // Visibility change — refresh on resume
