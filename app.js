@@ -184,13 +184,14 @@
 
   async function cancelAllPushes() {
     if (!WORKER_URL.includes('.workers.dev')) return;
-    try {
-      await fetch(WORKER_URL, {
+    const tags = ['timer-done', 'timer-5min', 'timer-open', 'sleep'];
+    await Promise.all(tags.map(tag =>
+      fetch(WORKER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancelAll' }),
-      });
-    } catch {}
+        body: JSON.stringify({ action: 'cancel', tag }),
+      }).catch(() => {})
+    ));
   }
 
   async function requestNotifPerm() {
