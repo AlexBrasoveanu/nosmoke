@@ -106,11 +106,18 @@ async function sendPush(subscription, title, body, env) {
     vapidAuthHeader(subscription.endpoint, env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY),
     encryptPayload(subscription, payload),
   ]);
-  return fetch(subscription.endpoint, {
+  const res = await fetch(subscription.endpoint, {
     method: 'POST',
     headers: { Authorization: auth, 'Content-Type': 'application/octet-stream', 'Content-Encoding': 'aes128gcm', TTL: '86400', Urgency: 'normal' },
     body: encrypted,
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    console.error(`Push failed ${res.status}: ${text}`);
+  } else {
+    console.log(`Push sent OK ${res.status}`);
+  }
+  return res;
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -154,7 +161,7 @@ export default {
       if (!raw) return;
       const { subscription, title, body, sendAt } = JSON.parse(raw);
       if (sendAt <= now + 60000) {
-        await sendPush(subscription, title, body, env).catch(() => {});
+        await sendPush(subscription, title, body, env).catch(e => console.error('sendPush error:', e.message));
         await env.KV.delete(name);
       }
     }));
